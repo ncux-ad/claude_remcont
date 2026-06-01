@@ -23,8 +23,33 @@ _SCHEMA = """
         updated_at  TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_session ON tasks(session_id);
 """
+
+_migration_lock = threading.Lock()
+_migrated = False
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """One-time, idempotent migration for DBs created before the session_id column.
+
+    Runs once per process (double-checked under its own lock, separate from
+    _lock to avoid deadlocking callers that already hold it). The session_id
+    index lives here — not in _SCHEMA — so executescript() never references the
+    column on an old DB before this ALTER adds it.
+    """
+    global _migrated
+    if _migrated:
+        return
+    with _migration_lock:
+        if _migrated:
+            return
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "session_id" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+            log.info("Migrated tasks table: added session_id column")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON tasks(session_id)")
+        conn.commit()
+        _migrated = True
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -40,13 +65,7 @@ def _get_conn() -> sqlite3.Connection:
         conn = sqlite3.connect(QUEUE_FILE, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
-    # Migration: add session_id column to existing databases that predate this field
-    try:
-        conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON tasks(session_id)")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    _migrate(conn)
     return conn
 
 
@@ -106,6 +125,26 @@ def set_status(task_id: str, status: str):
                     (status, now, task_id),
                 )
             log.debug("Task %s → %s", task_id, status)
+        finally:
+            conn.close()
+
+
+def set_session_id(task_id: str, session_id: str):
+    """Backfill the session a task actually ran in.
+
+    For /new and implicit --continue tasks the session is unknown at enqueue
+    time (it's resolved by Claude only after the run), so push() stores NULL.
+    The worker calls this once the real session id is known so the task shows
+    up under /history <session_id>.
+    """
+    with _lock:
+        conn = _get_conn()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE tasks SET session_id=? WHERE id=?",
+                    (session_id, task_id),
+                )
         finally:
             conn.close()
 

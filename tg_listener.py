@@ -19,7 +19,7 @@ from config import (
 from queue_manager import (
     push, set_status, claim_next_pending,
     is_running, next_pending, reset_running_to_pending, cleanup_old_tasks, get_stats,
-    get_recent_tasks, get_tasks_for_session,
+    get_recent_tasks, get_tasks_for_session, set_session_id,
 )
 import session_manager as sm
 import circuit_breaker as cb
@@ -131,6 +131,13 @@ def run_claude(task: dict):
             sm.register(new_sid, chat_id)
         elif active_id:
             sm.increment_task_count(active_id, chat_id)
+
+        # Backfill the session this task actually ran in: for /new and implicit
+        # --continue tasks push() stored NULL because the session was unknown
+        # until Claude resolved it just now.
+        resolved_sid = new_sid or active_id
+        if resolved_sid:
+            set_session_id(task_id, resolved_sid)
 
         if result.returncode == 0:
             cb.record_success(chat_id)

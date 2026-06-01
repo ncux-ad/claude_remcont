@@ -115,3 +115,46 @@ def test_push_stores_session_id(isolated_queue):
 
 def test_get_tasks_for_session_empty(isolated_queue):
     assert qm.get_tasks_for_session("no-such-session", chat_id=1) == []
+
+
+def test_set_session_id_backfills(isolated_queue):
+    # Implicit task: enqueued without a session (session_id is NULL).
+    task_id = qm.push("implicit task", chat_id=1, message_id=1)
+    assert qm.get_tasks_for_session("resolved-sid", chat_id=1) == []
+    # Worker learns the real session after the run and backfills it.
+    qm.set_session_id(task_id, "resolved-sid")
+    tasks = qm.get_tasks_for_session("resolved-sid", chat_id=1)
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == task_id
+
+
+def test_migration_upgrades_old_db_without_data_loss(isolated_queue, monkeypatch):
+    import sqlite3
+    # Build a pre-v0.9 DB: tasks table WITHOUT session_id, holding one task.
+    old_schema = """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, text TEXT NOT NULL, chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL, force_new INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL, updated_at TEXT
+        );
+        CREATE INDEX idx_status ON tasks(status);
+    """
+    conn = sqlite3.connect(isolated_queue)
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO tasks (id, text, chat_id, message_id, status, created_at)"
+        " VALUES ('old1', 'pre-existing', 1, 1, 'pending', '2026-01-01T00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(qm, "_migrated", False)  # force migration on this fresh process state
+    # First access runs _get_conn -> _migrate; the old task must NOT be wiped.
+    task = qm.next_pending()
+    assert task is not None
+    assert task["id"] == "old1"
+    assert task["session_id"] is None
+    # The new column is usable after migration.
+    qm.set_session_id("old1", "sess-x")
+    assert qm.get_tasks_for_session("sess-x", chat_id=1)[0]["id"] == "old1"
