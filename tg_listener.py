@@ -81,8 +81,8 @@ def run_claude(task: dict):
 
     # Status is already "running" — set atomically by claim_next_pending()
 
-    session_args = sm.build_claude_args(force_new=force_new)
-    active_id    = sm.get_active_id()
+    session_args = sm.build_claude_args(chat_id, force_new=force_new)
+    active_id    = sm.get_active_id(chat_id)
 
     if force_new:
         hint = "_(новая сессия)_"
@@ -103,9 +103,9 @@ def run_claude(task: dict):
 
         new_sid = extract_session_id(result.stdout or "")
         if new_sid:
-            sm.register(new_sid)
+            sm.register(new_sid, chat_id)
         elif active_id:
-            sm.increment_task_count(active_id)
+            sm.increment_task_count(active_id, chat_id)
 
         if result.returncode == 0:
             set_status(task_id, "done")
@@ -165,8 +165,8 @@ def handle_message(msg: dict):
         return
 
     if text == "/sessions":
-        sessions = sm.get_all()
-        active   = sm.get_active_id()
+        sessions = sm.get_all(chat_id)
+        active   = sm.get_active_id(chat_id)
         if not sessions:
             tg_send(chat_id, "📭 Нет сохранённых сессий.")
             return
@@ -179,15 +179,15 @@ def handle_message(msg: dict):
 
     if text.startswith("/session "):
         sid = text[9:].strip()
-        if not sm.exists(sid):
+        if not sm.exists(sid, chat_id):
             tg_send(chat_id, f"❓ Сессия `{sid}` не найдена.")
             return
-        sm.set_active(sid)
+        sm.set_active(sid, chat_id)
         tg_send(chat_id, f"✅ Переключились на `{sid[:12]}`")
         return
 
     if text == "/new":
-        sm.set_active(None)
+        sm.set_active(None, chat_id)
         tg_send(chat_id, "🆕 Следующая задача начнёт новую сессию.")
         return
 
@@ -197,15 +197,15 @@ def handle_message(msg: dict):
             tg_send(chat_id, "Синтаксис: `/label SESSION_ID Имя`")
             return
         sid, label = parts
-        if not sm.exists(sid):
+        if not sm.exists(sid, chat_id):
             tg_send(chat_id, f"❓ Сессия `{sid}` не найдена.")
             return
-        sm.set_label(sid, label)
+        sm.set_label(sid, label, chat_id)
         tg_send(chat_id, f"✅ Сессия `{sid[:12]}` переименована: *{label}*")
         return
 
     if text == "/status":
-        active = sm.get_active_id()
+        active = sm.get_active_id(chat_id)
         if is_running():
             sid_hint = f"\nСессия: `{active[:12]}`" if active else ""
             tg_send(chat_id, f"⚙️ Claude Code работает.{sid_hint}")
@@ -220,7 +220,7 @@ def handle_message(msg: dict):
     if text.startswith("/new "):
         force_new = True
         text = text[5:].strip()
-        sm.set_active(None)
+        sm.set_active(None, chat_id)
 
     if not text:
         tg_send(chat_id, "⚠️ Пустая задача — напишите текст после `/new`.")
@@ -231,7 +231,7 @@ def handle_message(msg: dict):
         tg_send(chat_id, f"🚫 Очередь переполнена (лимит {MAX_QUEUE_SIZE}). Подождите завершения текущих задач.")
         return
 
-    active   = sm.get_active_id()
+    active   = sm.get_active_id(chat_id)
     sid_hint = "\n🆕 Новая сессия" if force_new else (f"\nСессия: `{active[:12]}`" if active else "")
     tg_send(chat_id, f"📥 Принято `{task_id}`{sid_hint}", reply_to=message_id)
     log.info("Task %s queued from chat %d: %s", task_id, chat_id, text[:80])
@@ -258,8 +258,8 @@ def main():
     # Recover tasks stuck in "running" state from a previous unclean shutdown
     reset_running_to_pending()
 
-    log.info("=== Bridge started | project=%s | session=%s | queue_limit=%d ===",
-             PROJECT_DIR, sm.get_active_id() or "new", MAX_QUEUE_SIZE)
+    log.info("=== Bridge started | project=%s | queue_limit=%d ===",
+             PROJECT_DIR, MAX_QUEUE_SIZE)
 
     threading.Thread(target=queue_worker, daemon=True).start()
 
