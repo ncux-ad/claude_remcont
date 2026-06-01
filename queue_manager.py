@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from config import QUEUE_FILE, MAX_QUEUE_SIZE
 
 _lock = threading.Lock()
@@ -92,6 +92,24 @@ def reset_running_to_pending():
         if reset:
             _save(q)
             log.warning("Reset %d stuck 'running' task(s) to 'pending' on startup", len(reset))
+
+
+def cleanup_old_tasks(max_age_days: int) -> int:
+    """Remove done/error tasks older than max_age_days. Returns count removed."""
+    with _lock:
+        q = _load()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        before = len(q)
+        q = [
+            t for t in q
+            if t["status"] in ("pending", "running")
+            or datetime.fromisoformat(t.get("updated_at", t["created_at"])) > cutoff
+        ]
+        removed = before - len(q)
+        if removed:
+            _save(q)
+            log.info("Cleanup: removed %d old task(s) (>%d days)", removed, max_age_days)
+        return removed
 
 
 def is_running() -> bool:

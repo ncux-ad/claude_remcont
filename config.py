@@ -15,6 +15,9 @@ LOG_FILE          = os.path.expanduser("~/claude_remcont/logs/listener.log")
 HEARTBEAT_FILE    = os.path.expanduser("~/claude_remcont/logs/heartbeat")
 HEARTBEAT_MAX_AGE = int(os.environ.get("CLAUDE_HEARTBEAT_MAX_AGE", "120"))
 
+QUEUE_CLEANUP_DAYS   = int(os.environ.get("CLAUDE_QUEUE_CLEANUP_DAYS", "7"))
+SESSION_CLEANUP_DAYS = int(os.environ.get("CLAUDE_SESSION_CLEANUP_DAYS", "30"))
+
 
 def validate_config() -> list[str]:
     """Return list of fatal config errors. Empty list = OK."""

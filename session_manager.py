@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from config import SESSION_FILE
 
 _lock = threading.Lock()
@@ -107,6 +107,29 @@ def set_label(session_id: str, label: str, chat_id: int):
             if s["id"] == session_id:
                 s["label"] = label
         _save(data)
+
+
+def cleanup_old_sessions(max_age_days: int) -> int:
+    """Remove sessions unused for max_age_days, except active ones. Returns count removed."""
+    with _lock:
+        data = _load()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        total_removed = 0
+        for key, chat in data["chats"].items():
+            active = chat.get("active_id")
+            before = len(chat["sessions"])
+            chat["sessions"] = [
+                s for s in chat["sessions"]
+                if s["id"] == active
+                or datetime.fromisoformat(s.get("last_used", s["created_at"])) > cutoff
+            ]
+            removed = before - len(chat["sessions"])
+            if removed:
+                total_removed += removed
+                log.info("Cleanup: removed %d old session(s) for chat %s", removed, key)
+        if total_removed:
+            _save(data)
+        return total_removed
 
 
 def build_claude_args(chat_id: int, force_new: bool = False) -> list[str]:

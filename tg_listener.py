@@ -13,11 +13,12 @@ from datetime import datetime, timezone
 
 from config import (
     BOT_TOKEN, ALLOWED_CHAT_IDS, PROJECT_DIR, CLAUDE_BIN,
-    LOG_FILE, TASK_TIMEOUT, MAX_QUEUE_SIZE, HEARTBEAT_FILE, validate_config,
+    LOG_FILE, TASK_TIMEOUT, MAX_QUEUE_SIZE, HEARTBEAT_FILE,
+    QUEUE_CLEANUP_DAYS, SESSION_CLEANUP_DAYS, validate_config,
 )
 from queue_manager import (
     push, set_status, claim_next_pending,
-    is_running, next_pending, reset_running_to_pending,
+    is_running, next_pending, reset_running_to_pending, cleanup_old_tasks,
 )
 import session_manager as sm
 
@@ -279,6 +280,9 @@ def main():
     # Recover tasks stuck in "running" state from a previous unclean shutdown
     reset_running_to_pending()
 
+    cleanup_old_tasks(QUEUE_CLEANUP_DAYS)
+    sm.cleanup_old_sessions(SESSION_CLEANUP_DAYS)
+
     log.info("=== Bridge started | project=%s | queue_limit=%d ===",
              PROJECT_DIR, MAX_QUEUE_SIZE)
 
@@ -286,6 +290,7 @@ def main():
 
     offset = 0
     _last_heartbeat = 0.0
+    _last_cleanup = 0.0
     while not _shutdown.is_set():
         for update in tg_get_updates(offset):
             offset = update["update_id"] + 1
@@ -298,6 +303,10 @@ def main():
         if now - _last_heartbeat >= 30:
             _write_heartbeat()
             _last_heartbeat = now
+        if now - _last_cleanup >= 3600:
+            cleanup_old_tasks(QUEUE_CLEANUP_DAYS)
+            sm.cleanup_old_sessions(SESSION_CLEANUP_DAYS)
+            _last_cleanup = now
         time.sleep(1)
 
     log.info("=== Bridge stopped ===")
