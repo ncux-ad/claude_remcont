@@ -32,7 +32,7 @@ def _get_conn() -> sqlite3.Connection:
     try:
         conn.executescript(_SCHEMA)
     except sqlite3.DatabaseError as e:
-        log.error("Queue database corrupted, resetting: %s", e)
+        log.critical("Queue database corrupted — all queued tasks lost. Resetting: %s", e)
         conn.close()
         os.remove(QUEUE_FILE)
         conn = sqlite3.connect(QUEUE_FILE, timeout=10)
@@ -59,8 +59,7 @@ def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> s
                 log.warning("Queue full (%d/%d), rejecting task from chat %d",
                             pending_running, MAX_QUEUE_SIZE, chat_id)
                 return None
-            total = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            task_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + f"_{total}"
+            task_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
             now = datetime.now(timezone.utc).isoformat()
             with conn:
                 conn.execute(
@@ -194,16 +193,11 @@ def next_pending() -> dict | None:
 
 
 def get_running_task() -> dict | None:
-    """Return the current running task, or the most recent task if none is running."""
+    """Return the current running task, or None if nothing is running."""
     conn = _get_conn()
     try:
         row = conn.execute(
             "SELECT * FROM tasks WHERE status='running' ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            return _row_to_dict(row)
-        row = conn.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         return _row_to_dict(row) if row else None
     finally:

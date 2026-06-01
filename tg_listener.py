@@ -137,9 +137,8 @@ def run_claude(task: dict):
             tg_send(chat_id, f"❌ *Ошибка*\n```\n{err}\n```")
             set_status(task_id, "error")
 
-    except subprocess.TimeoutExpired as e:
-        if e.process:
-            e.process.kill()
+    except subprocess.TimeoutExpired:
+        # subprocess.run() already kills the child on timeout before re-raising
         tg_send(chat_id, f"⏱ Таймаут {TASK_TIMEOUT}s — задача остановлена.")
         set_status(task_id, "error")
     except Exception:
@@ -255,8 +254,8 @@ def handle_message(msg: dict):
         if is_running():
             sid_hint = f"\nСессия: `{active[:12]}`" if active else ""
             tg_send(chat_id, f"⚙️ Claude Code работает.{sid_hint}")
-        elif next_pending():
-            tg_send(chat_id, f"📋 В очереди: `{next_pending()['text'][:100]}`")
+        elif (pending := next_pending()):
+            tg_send(chat_id, f"📋 В очереди: `{pending['text'][:100]}`")
         else:
             sid_hint = f"\nАктивная сессия: `{active[:12]}`" if active else "\nНовая сессия при следующем запуске."
             tg_send(chat_id, f"✅ Свободен.{sid_hint}")
