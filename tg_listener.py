@@ -9,10 +9,11 @@ import threading
 import logging
 import requests
 import os
+from datetime import datetime, timezone
 
 from config import (
     BOT_TOKEN, ALLOWED_CHAT_IDS, PROJECT_DIR, CLAUDE_BIN,
-    LOG_FILE, TASK_TIMEOUT, MAX_QUEUE_SIZE, validate_config,
+    LOG_FILE, TASK_TIMEOUT, MAX_QUEUE_SIZE, HEARTBEAT_FILE, validate_config,
 )
 from queue_manager import (
     push, set_status, claim_next_pending,
@@ -29,6 +30,17 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 _shutdown = threading.Event()
+
+
+def _write_heartbeat():
+    try:
+        os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
+        tmp = HEARTBEAT_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+        os.replace(tmp, HEARTBEAT_FILE)
+    except OSError as e:
+        log.warning("Failed to write heartbeat: %s", e)
 
 
 def _handle_sigterm(signum, frame):
@@ -264,6 +276,7 @@ def main():
     threading.Thread(target=queue_worker, daemon=True).start()
 
     offset = 0
+    _last_heartbeat = 0.0
     while not _shutdown.is_set():
         for update in tg_get_updates(offset):
             offset = update["update_id"] + 1
@@ -272,6 +285,10 @@ def main():
                     handle_message(update["message"])
                 except Exception:
                     log.exception("Unhandled error in handle_message")
+        now = time.time()
+        if now - _last_heartbeat >= 30:
+            _write_heartbeat()
+            _last_heartbeat = now
         time.sleep(1)
 
     log.info("=== Bridge stopped ===")
