@@ -63,17 +63,26 @@ def tg_get_updates(offset: int) -> list:
 
 
 def tg_send(chat_id: int, text: str, reply_to: int = None):
-    try:
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        if reply_to:
-            payload["reply_to_message_id"] = reply_to
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json=payload,
-            timeout=10,
-        )
-    except Exception as e:
-        log.warning("sendMessage failed: %s", type(e).__name__)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    delay = 1
+    for attempt in range(3):
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=payload,
+                timeout=10,
+            )
+            return
+        except Exception as e:
+            if attempt < 2:
+                log.warning("sendMessage attempt %d failed: %s — retrying in %ds",
+                            attempt + 1, type(e).__name__, delay)
+                time.sleep(delay)
+                delay *= 2
+            else:
+                log.warning("sendMessage failed after 3 attempts: %s", type(e).__name__)
 
 
 # Only match Claude's structured session ID output — no dangerous fallback
