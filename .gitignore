@@ -1,0 +1,6 @@
+logs/
+*.log
+.queue.json
+__pycache__/
+*.pyc
+.env*
