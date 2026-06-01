@@ -108,7 +108,7 @@
 
 ---
 
-### v0.8 — LOW-задачи: rate limiting, circuit breaker, SQLite sessions, staging (текущий)
+### v0.8 — LOW-задачи: rate limiting, circuit breaker, SQLite sessions, staging
 
 - **Per-chat rate limiting**: `PER_CHAT_QUEUE_LIMIT=5` — каждый чат не может занять всю глобальную очередь
 - **Circuit breaker**: `circuit_breaker.py` — после N подряд падений (default 3) блокирует чат на COOLDOWN секунд (default 300); состояние in-memory, настраивается через env
@@ -123,9 +123,20 @@
 
 ---
 
+### v0.9 — /history SESSION_ID, session_id в задачах, DEPLOY.md (текущий)
+
+- **`/history SESSION_ID`**: задачи теперь хранят `session_id` при постановке в очередь; `/history <sid>` показывает до 20 задач конкретной сессии; `/history` без аргумента — последние 10 задач чата
+- **Миграция схемы**: `ALTER TABLE tasks ADD COLUMN session_id TEXT` — без потери данных для существующих БД
+- **DEPLOY.md**: шаг «Healthcheck cron», rollback обновлён под `.db`-файлы
+- **README.md, .env.example**: актуализированы под v0.8 (все новые env-переменные и команды)
+
+**Тесты: 59 тестов, 100% pass** (+2 теста `get_tasks_for_session`)
+
+---
+
 ## Что предстоит
 
-Все HIGH, MEDIUM и LOW задачи выполнены. Проект в production-ready состоянии.
+Все HIGH, MEDIUM, LOW задачи выполнены. Проект в production-ready состоянии.
 
 ---
 
