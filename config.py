@@ -9,7 +9,7 @@ CLAUDE_BIN    = os.environ.get("CLAUDE_BIN", "claude")
 TASK_TIMEOUT  = int(os.environ.get("CLAUDE_TASK_TIMEOUT", "0"))
 MAX_QUEUE_SIZE = int(os.environ.get("CLAUDE_MAX_QUEUE_SIZE", "50"))
 
-QUEUE_FILE        = os.path.expanduser("~/claude_remcont/logs/.queue.json")
+QUEUE_FILE        = os.path.expanduser("~/claude_remcont/logs/.queue.db")
 SESSION_FILE      = os.path.expanduser("~/claude_remcont/logs/sessions.json")
 LOG_FILE          = os.path.expanduser("~/claude_remcont/logs/listener.log")
 HEARTBEAT_FILE    = os.path.expanduser("~/claude_remcont/logs/heartbeat")
