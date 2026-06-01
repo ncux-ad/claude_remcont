@@ -10,14 +10,21 @@ _lock = threading.Lock()
 def _load() -> dict:
     if not os.path.exists(SESSION_FILE):
         return {"active_id": None, "sessions": []}
-    with open(SESSION_FILE) as f:
-        return json.load(f)
+    try:
+        with open(SESSION_FILE) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"active_id": None, "sessions": []}
 
 
 def _save(data: dict):
     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-    with open(SESSION_FILE, "w") as f:
+    tmp = SESSION_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, SESSION_FILE)
 
 
 def get_active_id() -> str | None:

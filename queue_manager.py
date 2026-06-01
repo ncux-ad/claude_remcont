@@ -7,16 +7,24 @@ from config import QUEUE_FILE
 _lock = threading.Lock()
 
 
-def _load():
+def _load() -> list:
     if not os.path.exists(QUEUE_FILE):
         return []
-    with open(QUEUE_FILE) as f:
-        return json.load(f)
+    try:
+        with open(QUEUE_FILE) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
-def _save(q):
-    with open(QUEUE_FILE, "w") as f:
+def _save(q: list):
+    os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
+    tmp = QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(q, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, QUEUE_FILE)
 
 
 def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> str:
@@ -46,11 +54,27 @@ def set_status(task_id: str, status: str):
         _save(q)
 
 
+def claim_next_pending() -> dict | None:
+    """Atomically claim the next pending task only if nothing is currently running.
+    Eliminates the TOCTOU race condition between is_running() and next_pending()."""
+    with _lock:
+        q = _load()
+        if any(t["status"] == "running" for t in q):
+            return None
+        for t in q:
+            if t["status"] == "pending":
+                t["status"] = "running"
+                t["updated_at"] = datetime.utcnow().isoformat()
+                _save(q)
+                return t
+        return None
+
+
 def is_running() -> bool:
     return any(t["status"] == "running" for t in _load())
 
 
-def next_pending():
+def next_pending() -> dict | None:
     for t in _load():
         if t["status"] == "pending":
             return t

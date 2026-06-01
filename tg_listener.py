@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import re
+import shutil
+import sys
 import time
 import subprocess
 import threading
@@ -8,7 +10,7 @@ import requests
 import os
 
 from config import BOT_TOKEN, ALLOWED_CHAT_IDS, PROJECT_DIR, CLAUDE_BIN, LOG_FILE, TASK_TIMEOUT
-from queue_manager import push, set_status, is_running, next_pending
+from queue_manager import push, set_status, claim_next_pending, is_running, next_pending
 import session_manager as sm
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -29,7 +31,8 @@ def tg_get_updates(offset: int) -> list:
         )
         return r.json().get("result", [])
     except Exception as e:
-        log.warning(f"getUpdates: {e}")
+        # Log only exception type to avoid leaking BOT_TOKEN via URL in traceback
+        log.warning(f"getUpdates failed: {type(e).__name__}: {e.__class__.__module__}")
         return []
 
 
@@ -44,20 +47,17 @@ def tg_send(chat_id: int, text: str, reply_to: int = None):
             timeout=10,
         )
     except Exception as e:
-        log.warning(f"sendMessage: {e}")
+        log.warning(f"sendMessage failed: {type(e).__name__}")
 
 
+# Only match Claude's structured session ID output — removed the dangerous
+# fallback that accepted any 16+ char string as a session ID
 SESSION_ID_RE = re.compile(r"session[_\s-]?id[:\s]+([a-zA-Z0-9_-]{8,})", re.IGNORECASE)
 
 
 def extract_session_id(output: str) -> str | None:
     m = SESSION_ID_RE.search(output)
-    if m:
-        return m.group(1)
-    first_line = output.strip().splitlines()[0] if output.strip() else ""
-    if re.fullmatch(r"[a-zA-Z0-9_-]{16,}", first_line.strip()):
-        return first_line.strip()
-    return None
+    return m.group(1) if m else None
 
 
 def run_claude(task: dict):
@@ -66,7 +66,7 @@ def run_claude(task: dict):
     text      = task["text"]
     force_new = task.get("force_new", False)
 
-    set_status(task_id, "running")
+    # Status is already "running" — set atomically by claim_next_pending()
 
     session_args = sm.build_claude_args(force_new=force_new)
     active_id    = sm.get_active_id()
@@ -101,21 +101,23 @@ def run_claude(task: dict):
             tg_send(chat_id, f"❌ *Ошибка*\n```\n{err}\n```")
             set_status(task_id, "error")
 
-    except subprocess.TimeoutExpired:
-        tg_send(chat_id, f"⏱ Таймаут {TASK_TIMEOUT}s")
+    except subprocess.TimeoutExpired as e:
+        e.process and e.process.kill()
+        tg_send(chat_id, f"⏱ Таймаут {TASK_TIMEOUT}s — задача остановлена.")
         set_status(task_id, "error")
     except Exception as e:
-        log.exception(e)
-        tg_send(chat_id, f"💥 `{e}`")
+        log.exception("run_claude failed")
+        # Don't send raw exception to user — it may contain sensitive paths/data
+        tg_send(chat_id, "💥 Внутренняя ошибка. Подробности в логах сервера.")
         set_status(task_id, "error")
 
 
 def queue_worker():
     while True:
-        if not is_running():
-            task = next_pending()
-            if task:
-                threading.Thread(target=run_claude, args=(task,), daemon=True).start()
+        # claim_next_pending() is atomic: check-and-set in one lock — no race condition
+        task = claim_next_pending()
+        if task:
+            threading.Thread(target=run_claude, args=(task,), daemon=True).start()
         time.sleep(2)
 
 
@@ -123,6 +125,10 @@ def handle_message(msg: dict):
     chat_id    = msg.get("chat", {}).get("id")
     text       = (msg.get("text") or "").strip()
     message_id = msg.get("message_id")
+
+    # Guard against malformed updates where chat_id is absent
+    if chat_id is None:
+        return
 
     if chat_id not in ALLOWED_CHAT_IDS:
         tg_send(chat_id, "⛔ Нет доступа.")
@@ -201,6 +207,10 @@ def handle_message(msg: dict):
         text = text[5:].strip()
         sm.set_active(None)
 
+    if not text:
+        tg_send(chat_id, "⚠️ Пустая задача — напишите текст после `/new`.")
+        return
+
     task_id = push(text, chat_id, message_id, force_new=force_new)
     active  = sm.get_active_id()
     sid_hint = "\n🆕 Новая сессия" if force_new else (f"\nСессия: `{active[:12]}`" if active else "")
@@ -209,6 +219,13 @@ def handle_message(msg: dict):
 
 
 def main():
+    if shutil.which(CLAUDE_BIN) is None:
+        log.error(f"Claude binary not found: '{CLAUDE_BIN}'. Set CLAUDE_BIN or install claude.")
+        sys.exit(1)
+
+    if TASK_TIMEOUT == 0:
+        log.warning("CLAUDE_TASK_TIMEOUT=0: tasks have no timeout and can hang indefinitely.")
+
     log.info(f"=== Bridge запущен | Проект: {PROJECT_DIR} | Сессия: {sm.get_active_id() or 'новая'} ===")
     threading.Thread(target=queue_worker, daemon=True).start()
     offset = 0
