@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import re
 import shutil
+import signal
 import sys
 import time
 import subprocess
@@ -9,8 +10,14 @@ import logging
 import requests
 import os
 
-from config import BOT_TOKEN, ALLOWED_CHAT_IDS, PROJECT_DIR, CLAUDE_BIN, LOG_FILE, TASK_TIMEOUT
-from queue_manager import push, set_status, claim_next_pending, is_running, next_pending
+from config import (
+    BOT_TOKEN, ALLOWED_CHAT_IDS, PROJECT_DIR, CLAUDE_BIN,
+    LOG_FILE, TASK_TIMEOUT, MAX_QUEUE_SIZE, validate_config,
+)
+from queue_manager import (
+    push, set_status, claim_next_pending,
+    is_running, next_pending, reset_running_to_pending,
+)
 import session_manager as sm
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -20,6 +27,13 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
 )
 log = logging.getLogger(__name__)
+
+_shutdown = threading.Event()
+
+
+def _handle_sigterm(signum, frame):
+    log.info("SIGTERM received — shutting down gracefully.")
+    _shutdown.set()
 
 
 def tg_get_updates(offset: int) -> list:
@@ -32,7 +46,7 @@ def tg_get_updates(offset: int) -> list:
         return r.json().get("result", [])
     except Exception as e:
         # Log only exception type to avoid leaking BOT_TOKEN via URL in traceback
-        log.warning(f"getUpdates failed: {type(e).__name__}: {e.__class__.__module__}")
+        log.warning("getUpdates failed: %s", type(e).__name__)
         return []
 
 
@@ -47,11 +61,10 @@ def tg_send(chat_id: int, text: str, reply_to: int = None):
             timeout=10,
         )
     except Exception as e:
-        log.warning(f"sendMessage failed: {type(e).__name__}")
+        log.warning("sendMessage failed: %s", type(e).__name__)
 
 
-# Only match Claude's structured session ID output — removed the dangerous
-# fallback that accepted any 16+ char string as a session ID
+# Only match Claude's structured session ID output — no dangerous fallback
 SESSION_ID_RE = re.compile(r"session[_\s-]?id[:\s]+([a-zA-Z0-9_-]{8,})", re.IGNORECASE)
 
 
@@ -81,7 +94,7 @@ def run_claude(task: dict):
     tg_send(chat_id, f"⚙️ *Запускаю задачу* {hint}\n`{text[:200]}`")
 
     cmd = [CLAUDE_BIN, *session_args, "--dangerously-skip-permissions", "-p", text]
-    kwargs = dict(cwd=PROJECT_DIR, capture_output=True, text=True)
+    kwargs: dict = dict(cwd=PROJECT_DIR, capture_output=True, text=True)
     if TASK_TIMEOUT > 0:
         kwargs["timeout"] = TASK_TIMEOUT
 
@@ -102,23 +115,25 @@ def run_claude(task: dict):
             set_status(task_id, "error")
 
     except subprocess.TimeoutExpired as e:
-        e.process and e.process.kill()
+        if e.process:
+            e.process.kill()
         tg_send(chat_id, f"⏱ Таймаут {TASK_TIMEOUT}s — задача остановлена.")
         set_status(task_id, "error")
-    except Exception as e:
-        log.exception("run_claude failed")
+    except Exception:
+        log.exception("run_claude failed for task %s", task_id)
         # Don't send raw exception to user — it may contain sensitive paths/data
         tg_send(chat_id, "💥 Внутренняя ошибка. Подробности в логах сервера.")
         set_status(task_id, "error")
 
 
 def queue_worker():
-    while True:
+    while not _shutdown.is_set():
         # claim_next_pending() is atomic: check-and-set in one lock — no race condition
         task = claim_next_pending()
         if task:
             threading.Thread(target=run_claude, args=(task,), daemon=True).start()
         time.sleep(2)
+    log.info("Queue worker stopped.")
 
 
 def handle_message(msg: dict):
@@ -212,32 +227,54 @@ def handle_message(msg: dict):
         return
 
     task_id = push(text, chat_id, message_id, force_new=force_new)
-    active  = sm.get_active_id()
+    if task_id is None:
+        tg_send(chat_id, f"🚫 Очередь переполнена (лимит {MAX_QUEUE_SIZE}). Подождите завершения текущих задач.")
+        return
+
+    active   = sm.get_active_id()
     sid_hint = "\n🆕 Новая сессия" if force_new else (f"\nСессия: `{active[:12]}`" if active else "")
     tg_send(chat_id, f"📥 Принято `{task_id}`{sid_hint}", reply_to=message_id)
-    log.info(f"Задача {task_id} от {chat_id}: {text[:80]}")
+    log.info("Task %s queued from chat %d: %s", task_id, chat_id, text[:80])
 
 
 def main():
+    # Validate config before anything else
+    errors = validate_config()
+    if errors:
+        for e in errors:
+            log.error("Config error: %s", e)
+        sys.exit(1)
+
     if shutil.which(CLAUDE_BIN) is None:
-        log.error(f"Claude binary not found: '{CLAUDE_BIN}'. Set CLAUDE_BIN or install claude.")
+        log.error("Claude binary not found: '%s'. Set CLAUDE_BIN or install claude.", CLAUDE_BIN)
         sys.exit(1)
 
     if TASK_TIMEOUT == 0:
         log.warning("CLAUDE_TASK_TIMEOUT=0: tasks have no timeout and can hang indefinitely.")
 
-    log.info(f"=== Bridge запущен | Проект: {PROJECT_DIR} | Сессия: {sm.get_active_id() or 'новая'} ===")
+    # Graceful shutdown on SIGTERM (systemd stop, kill)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    # Recover tasks stuck in "running" state from a previous unclean shutdown
+    reset_running_to_pending()
+
+    log.info("=== Bridge started | project=%s | session=%s | queue_limit=%d ===",
+             PROJECT_DIR, sm.get_active_id() or "new", MAX_QUEUE_SIZE)
+
     threading.Thread(target=queue_worker, daemon=True).start()
+
     offset = 0
-    while True:
+    while not _shutdown.is_set():
         for update in tg_get_updates(offset):
             offset = update["update_id"] + 1
             if "message" in update:
                 try:
                     handle_message(update["message"])
-                except Exception as e:
-                    log.exception(e)
+                except Exception:
+                    log.exception("Unhandled error in handle_message")
         time.sleep(1)
+
+    log.info("=== Bridge stopped ===")
 
 
 if __name__ == "__main__":

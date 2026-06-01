@@ -1,10 +1,15 @@
 import json
+import logging
 import os
+import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from config import SESSION_FILE
 
 _lock = threading.Lock()
+log = logging.getLogger(__name__)
+
+_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
 
 def _load() -> dict:
@@ -13,7 +18,8 @@ def _load() -> dict:
     try:
         with open(SESSION_FILE) as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        log.error("Failed to load session file, returning empty: %s", e)
         return {"active_id": None, "sessions": []}
 
 
@@ -25,6 +31,10 @@ def _save(data: dict):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, SESSION_FILE)
+
+
+def _is_valid_session_id(session_id: str) -> bool:
+    return bool(_SESSION_ID_RE.match(session_id))
 
 
 def get_active_id() -> str | None:
@@ -47,6 +57,9 @@ def set_active(session_id: str | None):
 
 
 def register(session_id: str, label: str = ""):
+    if not _is_valid_session_id(session_id):
+        log.warning("Rejected invalid session_id from Claude output: %r", session_id[:64])
+        return
     with _lock:
         data = _load()
         if any(s["id"] == session_id for s in data["sessions"]):
@@ -56,11 +69,12 @@ def register(session_id: str, label: str = ""):
         data["sessions"].append({
             "id": session_id,
             "label": label or session_id[:8],
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "task_count": 1,
         })
         data["active_id"] = session_id
         _save(data)
+        log.info("Session registered: %s", session_id[:12])
 
 
 def increment_task_count(session_id: str):
@@ -69,7 +83,7 @@ def increment_task_count(session_id: str):
         for s in data["sessions"]:
             if s["id"] == session_id:
                 s["task_count"] = s.get("task_count", 0) + 1
-                s["last_used"] = datetime.utcnow().isoformat()
+                s["last_used"] = datetime.now(timezone.utc).isoformat()
         _save(data)
 
 

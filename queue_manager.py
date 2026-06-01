@@ -1,10 +1,12 @@
 import json
+import logging
 import os
 import threading
-from datetime import datetime
-from config import QUEUE_FILE
+from datetime import datetime, timezone
+from config import QUEUE_FILE, MAX_QUEUE_SIZE
 
 _lock = threading.Lock()
+log = logging.getLogger(__name__)
 
 
 def _load() -> list:
@@ -13,7 +15,8 @@ def _load() -> list:
     try:
         with open(QUEUE_FILE) as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        log.error("Failed to load queue file, returning empty: %s", e)
         return []
 
 
@@ -27,10 +30,15 @@ def _save(q: list):
     os.replace(tmp, QUEUE_FILE)
 
 
-def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> str:
+def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> str | None:
+    """Add task to queue. Returns task_id, or None if queue is full (rate limit)."""
     with _lock:
         q = _load()
-        task_id = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{len(q)}"
+        pending = sum(1 for t in q if t["status"] in ("pending", "running"))
+        if pending >= MAX_QUEUE_SIZE:
+            log.warning("Queue full (%d/%d), rejecting task from chat %d", pending, MAX_QUEUE_SIZE, chat_id)
+            return None
+        task_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{len(q)}"
         q.append({
             "id": task_id,
             "text": text,
@@ -38,9 +46,10 @@ def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> s
             "message_id": message_id,
             "force_new": force_new,
             "status": "pending",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
         _save(q)
+        log.info("Task queued: %s (chat=%d, queue=%d/%d)", task_id, chat_id, pending + 1, MAX_QUEUE_SIZE)
         return task_id
 
 
@@ -50,8 +59,9 @@ def set_status(task_id: str, status: str):
         for t in q:
             if t["id"] == task_id:
                 t["status"] = status
-                t["updated_at"] = datetime.utcnow().isoformat()
+                t["updated_at"] = datetime.now(timezone.utc).isoformat()
         _save(q)
+        log.debug("Task %s → %s", task_id, status)
 
 
 def claim_next_pending() -> dict | None:
@@ -64,10 +74,24 @@ def claim_next_pending() -> dict | None:
         for t in q:
             if t["status"] == "pending":
                 t["status"] = "running"
-                t["updated_at"] = datetime.utcnow().isoformat()
+                t["updated_at"] = datetime.now(timezone.utc).isoformat()
                 _save(q)
+                log.info("Task claimed: %s", t["id"])
                 return t
         return None
+
+
+def reset_running_to_pending():
+    """Mark any stuck 'running' tasks as 'pending' — call on startup after unclean shutdown."""
+    with _lock:
+        q = _load()
+        reset = [t for t in q if t["status"] == "running"]
+        for t in reset:
+            t["status"] = "pending"
+            t["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if reset:
+            _save(q)
+            log.warning("Reset %d stuck 'running' task(s) to 'pending' on startup", len(reset))
 
 
 def is_running() -> bool:
