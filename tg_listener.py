@@ -22,6 +22,7 @@ from queue_manager import (
     get_recent_tasks,
 )
 import session_manager as sm
+import circuit_breaker as cb
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -132,17 +133,21 @@ def run_claude(task: dict):
             sm.increment_task_count(active_id, chat_id)
 
         if result.returncode == 0:
+            cb.record_success(chat_id)
             set_status(task_id, "done")
         else:
+            cb.record_failure(chat_id)
             err = (result.stderr or "Неизвестная ошибка")[:500]
             tg_send(chat_id, f"❌ *Ошибка*\n```\n{err}\n```")
             set_status(task_id, "error")
 
     except subprocess.TimeoutExpired:
         # subprocess.run() already kills the child on timeout before re-raising
+        cb.record_failure(chat_id)
         tg_send(chat_id, f"⏱ Таймаут {TASK_TIMEOUT}s — задача остановлена.")
         set_status(task_id, "error")
     except Exception:
+        cb.record_failure(chat_id)
         log.exception("run_claude failed for task %s", task_id)
         # Don't send raw exception to user — it may contain sensitive paths/data
         tg_send(chat_id, "💥 Внутренняя ошибка. Подробности в логах сервера.")
@@ -301,9 +306,14 @@ def handle_message(msg: dict):
         tg_send(chat_id, "⚠️ Пустая задача — напишите текст после `/new`.")
         return
 
+    if cb.is_open(chat_id):
+        secs = cb.remaining_cooldown(chat_id)
+        tg_send(chat_id, f"⚡ Claude упал несколько раз подряд. Пауза {secs}с перед следующей задачей.")
+        return
+
     task_id = push(text, chat_id, message_id, force_new=force_new)
     if task_id is None:
-        tg_send(chat_id, f"🚫 Очередь переполнена (лимит {MAX_QUEUE_SIZE}). Подождите завершения текущих задач.")
+        tg_send(chat_id, f"🚫 Слишком много задач в очереди. Подождите завершения текущих.")
         return
 
     active   = sm.get_active_id(chat_id)

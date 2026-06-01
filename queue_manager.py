@@ -3,7 +3,7 @@ import os
 import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
-from config import QUEUE_FILE, MAX_QUEUE_SIZE
+from config import QUEUE_FILE, MAX_QUEUE_SIZE, PER_CHAT_QUEUE_LIMIT
 
 _lock = threading.Lock()
 log = logging.getLogger(__name__)
@@ -56,8 +56,16 @@ def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> s
                 "SELECT COUNT(*) FROM tasks WHERE status IN ('pending','running')"
             ).fetchone()[0]
             if pending_running >= MAX_QUEUE_SIZE:
-                log.warning("Queue full (%d/%d), rejecting task from chat %d",
+                log.warning("Global queue full (%d/%d), rejecting task from chat %d",
                             pending_running, MAX_QUEUE_SIZE, chat_id)
+                return None
+            chat_active = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE chat_id=? AND status IN ('pending','running')",
+                (chat_id,),
+            ).fetchone()[0]
+            if chat_active >= PER_CHAT_QUEUE_LIMIT:
+                log.warning("Per-chat limit (%d) reached for chat %d",
+                            PER_CHAT_QUEUE_LIMIT, chat_id)
                 return None
             task_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
             now = datetime.now(timezone.utc).isoformat()

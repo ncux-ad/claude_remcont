@@ -108,16 +108,24 @@
 
 ---
 
+### v0.8 — LOW-задачи: rate limiting, circuit breaker, SQLite sessions, staging (текущий)
+
+- **Per-chat rate limiting**: `PER_CHAT_QUEUE_LIMIT=5` — каждый чат не может занять всю глобальную очередь
+- **Circuit breaker**: `circuit_breaker.py` — после N подряд падений (default 3) блокирует чат на COOLDOWN секунд (default 300); состояние in-memory, настраивается через env
+- **SQLite для sessions**: `session_manager.py` полностью переписан на SQLite; WAL-режим, corrupt-DB recovery, та же публичная API
+- **Staging**: `docs/STAGING.md` — инструкция по запуску второго бота с отдельным `.env.staging`
+
+**Тесты: 57 тестов, 100% pass**
+- `tests/test_circuit.py` — 7 тестов circuit breaker (threshold, cooldown, per-chat isolation, auto-reset)
+- `tests/test_queue.py` — +2 теста per-chat rate limit
+- `tests/test_session.py` — переписан под SQLite, corrupt-DB тест
+- `tests/test_cleanup.py` — backdating через SQL вместо `_load`/`_save`
+
+---
+
 ## Что предстоит
 
-### 🟢 LOW — nice-to-have
-
-| Задача | Описание |
-|--------|----------|
-| Per-user rate limiting | Один пользователь не может спамить очередь (сейчас лимит общий на все чаты) |
-| Circuit breaker для Claude | Не вызывать Claude если он стабильно падает N раз подряд |
-| SQLite для sessions | Перевести `session_manager.py` с JSON на SQLite |
-| Staging-окружение | Отдельный бот-токен для тестирования правок |
+Все HIGH, MEDIUM и LOW задачи выполнены. Проект в production-ready состоянии.
 
 ---
 
@@ -139,6 +147,6 @@
 [x] Healthcheck (heartbeat + check_health.py)
 [x] SQLite вместо JSON (queue_manager)
 [x] Session isolation by chat_id
-[ ] Staging-окружение
+[x] Staging-окружение (docs/STAGING.md)
 [ ] autoApprove вместо --dangerously-skip-permissions (преднамеренное решение)
 ```

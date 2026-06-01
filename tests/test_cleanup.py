@@ -9,10 +9,10 @@ CHAT = 100
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(qm, "QUEUE_FILE", str(tmp_path / ".queue.db"))
-    monkeypatch.setattr(sm, "SESSION_FILE", str(tmp_path / "sessions.json"))
+    monkeypatch.setattr(sm, "SESSION_FILE", str(tmp_path / ".sessions.db"))
     import config
     monkeypatch.setattr(config, "QUEUE_FILE", str(tmp_path / ".queue.db"))
-    monkeypatch.setattr(config, "SESSION_FILE", str(tmp_path / "sessions.json"))
+    monkeypatch.setattr(config, "SESSION_FILE", str(tmp_path / ".sessions.db"))
 
 
 def _old_ts(days: int) -> str:
@@ -20,12 +20,24 @@ def _old_ts(days: int) -> str:
 
 
 def _backdate_task(task_id: str, days: int):
-    """Set updated_at to `days` ago directly via SQL."""
     ts = _old_ts(days)
     conn = qm._get_conn()
     try:
         with conn:
             conn.execute("UPDATE tasks SET updated_at=? WHERE id=?", (ts, task_id))
+    finally:
+        conn.close()
+
+
+def _backdate_session(session_id: str, days: int):
+    ts = _old_ts(days)
+    conn = sm._get_conn()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE sessions SET last_used=?, created_at=? WHERE id=?",
+                (ts, ts, session_id),
+            )
     finally:
         conn.close()
 
@@ -64,13 +76,8 @@ def test_cleanup_never_removes_pending_or_running():
 def test_cleanup_removes_old_sessions():
     sm.register("aaaa1111bbbb2222", CHAT)
     sm.register("cccc3333dddd4444", CHAT)
-    data = sm._load()
-    for s in data["chats"][str(CHAT)]["sessions"]:
-        if s["id"] == "aaaa1111bbbb2222":
-            s["last_used"] = _old_ts(40)
-            s["created_at"] = _old_ts(40)
-    data["chats"][str(CHAT)]["active_id"] = "cccc3333dddd4444"
-    sm._save(data)
+    _backdate_session("aaaa1111bbbb2222", days=40)
+    sm.set_active("cccc3333dddd4444", CHAT)
 
     removed = sm.cleanup_old_sessions(max_age_days=30)
     assert removed == 1
@@ -80,11 +87,7 @@ def test_cleanup_removes_old_sessions():
 
 def test_cleanup_never_removes_active_session():
     sm.register("aaaa1111bbbb2222", CHAT)
-    data = sm._load()
-    for s in data["chats"][str(CHAT)]["sessions"]:
-        s["last_used"] = _old_ts(60)
-        s["created_at"] = _old_ts(60)
-    sm._save(data)
+    _backdate_session("aaaa1111bbbb2222", days=60)
 
     removed = sm.cleanup_old_sessions(max_age_days=30)
     assert removed == 0

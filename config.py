@@ -10,13 +10,17 @@ TASK_TIMEOUT  = int(os.environ.get("CLAUDE_TASK_TIMEOUT", "0"))
 MAX_QUEUE_SIZE = int(os.environ.get("CLAUDE_MAX_QUEUE_SIZE", "50"))
 
 QUEUE_FILE        = os.path.expanduser("~/claude_remcont/logs/.queue.db")
-SESSION_FILE      = os.path.expanduser("~/claude_remcont/logs/sessions.json")
+SESSION_FILE      = os.path.expanduser("~/claude_remcont/logs/.sessions.db")
 LOG_FILE          = os.path.expanduser("~/claude_remcont/logs/listener.log")
 HEARTBEAT_FILE    = os.path.expanduser("~/claude_remcont/logs/heartbeat")
 HEARTBEAT_MAX_AGE = int(os.environ.get("CLAUDE_HEARTBEAT_MAX_AGE", "120"))
 
 QUEUE_CLEANUP_DAYS   = int(os.environ.get("CLAUDE_QUEUE_CLEANUP_DAYS", "7"))
 SESSION_CLEANUP_DAYS = int(os.environ.get("CLAUDE_SESSION_CLEANUP_DAYS", "30"))
+
+PER_CHAT_QUEUE_LIMIT     = int(os.environ.get("CLAUDE_PER_CHAT_QUEUE_LIMIT", "5"))
+CIRCUIT_BREAKER_THRESHOLD = int(os.environ.get("CLAUDE_CB_THRESHOLD", "3"))
+CIRCUIT_BREAKER_COOLDOWN  = int(os.environ.get("CLAUDE_CB_COOLDOWN", "300"))
 
 
 def validate_config() -> list[str]:

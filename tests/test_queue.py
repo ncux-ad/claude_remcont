@@ -88,3 +88,18 @@ def test_push_generates_unique_ids(isolated_queue):
     id1 = qm.push("task 1", chat_id=1, message_id=1)
     id2 = qm.push("task 2", chat_id=1, message_id=2)
     assert id1 != id2
+
+
+def test_per_chat_limit_blocks_same_chat(isolated_queue, monkeypatch):
+    monkeypatch.setattr(qm, "PER_CHAT_QUEUE_LIMIT", 2)
+    qm.push("task 1", chat_id=1, message_id=1)
+    qm.push("task 2", chat_id=1, message_id=2)
+    result = qm.push("task 3", chat_id=1, message_id=3)
+    assert result is None
+
+
+def test_per_chat_limit_allows_other_chats(isolated_queue, monkeypatch):
+    monkeypatch.setattr(qm, "PER_CHAT_QUEUE_LIMIT", 1)
+    qm.push("task 1", chat_id=1, message_id=1)
+    result = qm.push("task 2", chat_id=2, message_id=2)
+    assert result is not None

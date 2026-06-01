@@ -1,7 +1,7 @@
-import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
 from config import SESSION_FILE
@@ -11,38 +11,39 @@ log = logging.getLogger(__name__)
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
+_SCHEMA = """
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS sessions (
+        id          TEXT NOT NULL,
+        chat_id     INTEGER NOT NULL,
+        label       TEXT NOT NULL DEFAULT '',
+        task_count  INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        last_used   TEXT NOT NULL,
+        PRIMARY KEY (id, chat_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_chat ON sessions(chat_id);
+    CREATE TABLE IF NOT EXISTS active_sessions (
+        chat_id     INTEGER PRIMARY KEY,
+        session_id  TEXT
+    );
+"""
 
-def _load() -> dict:
-    if not os.path.exists(SESSION_FILE):
-        return {"chats": {}}
-    try:
-        with open(SESSION_FILE) as f:
-            data = json.load(f)
-        if "chats" not in data:
-            # Old single-chat format — start fresh
-            log.warning("Session file has old format, resetting to per-chat storage.")
-            return {"chats": {}}
-        return data
-    except (json.JSONDecodeError, OSError) as e:
-        log.error("Failed to load session file, returning empty: %s", e)
-        return {"chats": {}}
 
-
-def _save(data: dict):
+def _get_conn() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-    tmp = SESSION_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, SESSION_FILE)
-
-
-def _chat(data: dict, chat_id: int) -> dict:
-    key = str(chat_id)
-    if key not in data["chats"]:
-        data["chats"][key] = {"active_id": None, "sessions": []}
-    return data["chats"][key]
+    conn = sqlite3.connect(SESSION_FILE, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.executescript(_SCHEMA)
+    except sqlite3.DatabaseError as e:
+        log.critical("Session database corrupted — all sessions lost. Resetting: %s", e)
+        conn.close()
+        os.remove(SESSION_FILE)
+        conn = sqlite3.connect(SESSION_FILE, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(_SCHEMA)
+    return conn
 
 
 def _is_valid_session_id(session_id: str) -> bool:
@@ -50,22 +51,50 @@ def _is_valid_session_id(session_id: str) -> bool:
 
 
 def get_active_id(chat_id: int) -> str | None:
-    return _chat(_load(), chat_id).get("active_id")
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT session_id FROM active_sessions WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        return row["session_id"] if row else None
+    finally:
+        conn.close()
 
 
 def get_all(chat_id: int) -> list[dict]:
-    return list(reversed(_chat(_load(), chat_id).get("sessions", [])))
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM sessions WHERE chat_id=? ORDER BY last_used DESC",
+            (chat_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def exists(session_id: str, chat_id: int) -> bool:
-    return any(s["id"] == session_id for s in _chat(_load(), chat_id)["sessions"])
+    conn = _get_conn()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id=? AND chat_id=?",
+            (session_id, chat_id),
+        ).fetchone()[0] > 0
+    finally:
+        conn.close()
 
 
 def set_active(session_id: str | None, chat_id: int):
     with _lock:
-        data = _load()
-        _chat(data, chat_id)["active_id"] = session_id
-        _save(data)
+        conn = _get_conn()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO active_sessions (chat_id, session_id) VALUES (?, ?)",
+                    (chat_id, session_id),
+                )
+        finally:
+            conn.close()
 
 
 def register(session_id: str, chat_id: int, label: str = ""):
@@ -73,63 +102,84 @@ def register(session_id: str, chat_id: int, label: str = ""):
         log.warning("Rejected invalid session_id from Claude output: %r", session_id[:64])
         return
     with _lock:
-        data = _load()
-        chat = _chat(data, chat_id)
-        if any(s["id"] == session_id for s in chat["sessions"]):
-            chat["active_id"] = session_id
-            _save(data)
-            return
-        chat["sessions"].append({
-            "id": session_id,
-            "label": label or session_id[:8],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "task_count": 1,
-        })
-        chat["active_id"] = session_id
-        _save(data)
-        log.info("Session registered for chat %d: %s", chat_id, session_id[:12])
+        conn = _get_conn()
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            with conn:
+                existing = conn.execute(
+                    "SELECT id FROM sessions WHERE id=? AND chat_id=?",
+                    (session_id, chat_id),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE sessions SET last_used=? WHERE id=? AND chat_id=?",
+                        (now, session_id, chat_id),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO sessions (id, chat_id, label, task_count, created_at, last_used)"
+                        " VALUES (?, ?, ?, 1, ?, ?)",
+                        (session_id, chat_id, label or session_id[:8], now, now),
+                    )
+                    log.info("Session registered for chat %d: %s", chat_id, session_id[:12])
+                conn.execute(
+                    "INSERT OR REPLACE INTO active_sessions (chat_id, session_id) VALUES (?, ?)",
+                    (chat_id, session_id),
+                )
+        finally:
+            conn.close()
 
 
 def increment_task_count(session_id: str, chat_id: int):
     with _lock:
-        data = _load()
-        for s in _chat(data, chat_id)["sessions"]:
-            if s["id"] == session_id:
-                s["task_count"] = s.get("task_count", 0) + 1
-                s["last_used"] = datetime.now(timezone.utc).isoformat()
-        _save(data)
+        conn = _get_conn()
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET task_count=task_count+1, last_used=?"
+                    " WHERE id=? AND chat_id=?",
+                    (now, session_id, chat_id),
+                )
+        finally:
+            conn.close()
 
 
 def set_label(session_id: str, label: str, chat_id: int):
     with _lock:
-        data = _load()
-        for s in _chat(data, chat_id)["sessions"]:
-            if s["id"] == session_id:
-                s["label"] = label
-        _save(data)
+        conn = _get_conn()
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET label=? WHERE id=? AND chat_id=?",
+                    (label, session_id, chat_id),
+                )
+        finally:
+            conn.close()
 
 
 def cleanup_old_sessions(max_age_days: int) -> int:
     """Remove sessions unused for max_age_days, except active ones. Returns count removed."""
     with _lock:
-        data = _load()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-        total_removed = 0
-        for key, chat in data["chats"].items():
-            active = chat.get("active_id")
-            before = len(chat["sessions"])
-            chat["sessions"] = [
-                s for s in chat["sessions"]
-                if s["id"] == active
-                or datetime.fromisoformat(s.get("last_used", s["created_at"])) > cutoff
-            ]
-            removed = before - len(chat["sessions"])
+        conn = _get_conn()
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+            with conn:
+                cur = conn.execute(
+                    "DELETE FROM sessions WHERE last_used < ?"
+                    " AND NOT EXISTS ("
+                    "  SELECT 1 FROM active_sessions"
+                    "  WHERE active_sessions.session_id = sessions.id"
+                    "  AND active_sessions.chat_id = sessions.chat_id"
+                    " )",
+                    (cutoff,),
+                )
+            removed = cur.rowcount
             if removed:
-                total_removed += removed
-                log.info("Cleanup: removed %d old session(s) for chat %s", removed, key)
-        if total_removed:
-            _save(data)
-        return total_removed
+                log.info("Cleanup: removed %d old session(s)", removed)
+            return removed
+        finally:
+            conn.close()
 
 
 def build_claude_args(chat_id: int, force_new: bool = False) -> list[str]:

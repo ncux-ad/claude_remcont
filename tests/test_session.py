@@ -8,7 +8,7 @@ OTHER_CHAT = 200
 @pytest.fixture(autouse=True)
 def isolated_sessions(tmp_path, monkeypatch):
     """Redirect SESSION_FILE to a temp path for each test."""
-    session_file = str(tmp_path / "sessions.json")
+    session_file = str(tmp_path / ".sessions.db")
     monkeypatch.setattr(sm, "SESSION_FILE", session_file)
     import config
     monkeypatch.setattr(config, "SESSION_FILE", session_file)
@@ -76,10 +76,11 @@ def test_set_label(isolated_sessions):
     assert sessions[0]["label"] == "My Project"
 
 
-def test_load_returns_empty_on_corrupt_file(isolated_sessions):
-    open(isolated_sessions, "w").write("{bad json")
-    data = sm._load()
-    assert data == {"chats": {}}
+def test_corrupt_db_handled_gracefully(isolated_sessions):
+    open(isolated_sessions, "wb").write(b"not a sqlite db at all!!!")
+    assert sm.get_active_id(CHAT) is None
+    assert sm.get_all(CHAT) == []
+    assert not sm.exists("aaaa1111bbbb2222", CHAT)
 
 
 def test_chats_are_isolated(isolated_sessions):
