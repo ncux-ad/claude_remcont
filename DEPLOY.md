@@ -81,7 +81,21 @@ sudo cp claude-tg-bridge.logrotate /etc/logrotate.d/claude-tg-bridge
 sudo logrotate --debug /etc/logrotate.d/claude-tg-bridge
 ```
 
-## 8. Verify Everything Works
+## 8. Set Up Healthcheck (optional but recommended)
+
+The bot writes a heartbeat file every 30 seconds. `check_health.py` reads it and sends a Telegram alert if the bot stops responding.
+
+```bash
+# Edit crontab
+crontab -e
+```
+
+Add:
+```
+*/2 * * * * source ~/.env.claude-tg && python3 ~/claude_remcont/check_health.py
+```
+
+## 9. Verify Everything Works
 
 ```bash
 # Check service status
@@ -115,9 +129,9 @@ journalctl -u claude-tg-bridge@$USER -n 100 --no-pager
 # 1. Stop service
 sudo systemctl stop claude-tg-bridge@$USER
 
-# 2. Backup state files
-cp ~/claude_remcont/logs/sessions.json ~/sessions.json.backup
-cp ~/claude_remcont/logs/.queue.json ~/.queue.json.backup 2>/dev/null || true
+# 2. Backup state files (SQLite databases)
+cp ~/claude_remcont/logs/.queue.db ~/.queue.db.backup
+cp ~/claude_remcont/logs/.sessions.db ~/.sessions.db.backup
 
 # 3. Revert code
 cd ~/claude_remcont
@@ -132,7 +146,7 @@ sudo systemctl status claude-tg-bridge@$USER
 tail -20 ~/claude_remcont/logs/listener.log
 ```
 
-State files (`sessions.json`, `.queue.json`) are not touched by git — data is preserved across rollbacks.
+State files (`.queue.db`, `.sessions.db`) are not touched by git — data is preserved across rollbacks.
 
 ## Running Tests
 

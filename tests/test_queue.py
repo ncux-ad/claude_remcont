@@ -103,3 +103,15 @@ def test_per_chat_limit_allows_other_chats(isolated_queue, monkeypatch):
     qm.push("task 1", chat_id=1, message_id=1)
     result = qm.push("task 2", chat_id=2, message_id=2)
     assert result is not None
+
+
+def test_push_stores_session_id(isolated_queue):
+    qm.push("task 1", chat_id=1, message_id=1, session_id="sess-aaa")
+    qm.push("task 2", chat_id=1, message_id=2, session_id="sess-bbb")
+    tasks = qm.get_tasks_for_session("sess-aaa", chat_id=1)
+    assert len(tasks) == 1
+    assert tasks[0]["text"] == "task 1"
+
+
+def test_get_tasks_for_session_empty(isolated_queue):
+    assert qm.get_tasks_for_session("no-such-session", chat_id=1) == []

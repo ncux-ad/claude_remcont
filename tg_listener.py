@@ -19,7 +19,7 @@ from config import (
 from queue_manager import (
     push, set_status, claim_next_pending,
     is_running, next_pending, reset_running_to_pending, cleanup_old_tasks, get_stats,
-    get_recent_tasks,
+    get_recent_tasks, get_tasks_for_session,
 )
 import session_manager as sm
 import circuit_breaker as cb
@@ -216,13 +216,22 @@ def handle_message(msg: dict):
         )
         return
 
-    if text == "/history":
-        tasks = get_recent_tasks(chat_id, limit=10)
+    if text == "/history" or text.startswith("/history "):
+        status_icon = {"pending": "⏳", "running": "⚙️", "done": "✅", "error": "❌"}
+        if text.startswith("/history "):
+            sid = text[9:].strip()
+            if not sm.exists(sid, chat_id):
+                tg_send(chat_id, f"❓ Сессия `{sid[:12]}` не найдена.")
+                return
+            tasks = get_tasks_for_session(sid, chat_id, limit=20)
+            header = f"📜 *История сессии* `{sid[:12]}`\n"
+        else:
+            tasks = get_recent_tasks(chat_id, limit=10)
+            header = "📜 *История задач (последние 10)*\n"
         if not tasks:
             tg_send(chat_id, "📭 Нет задач в истории.")
             return
-        status_icon = {"pending": "⏳", "running": "⚙️", "done": "✅", "error": "❌"}
-        lines = ["📜 *История задач (последние 10)*\n"]
+        lines = [header]
         for t in tasks:
             icon = status_icon.get(t["status"], "❓")
             ts = t["created_at"][:16].replace("T", " ")
@@ -311,12 +320,12 @@ def handle_message(msg: dict):
         tg_send(chat_id, f"⚡ Claude упал несколько раз подряд. Пауза {secs}с перед следующей задачей.")
         return
 
-    task_id = push(text, chat_id, message_id, force_new=force_new)
+    active = sm.get_active_id(chat_id)
+    task_id = push(text, chat_id, message_id, force_new=force_new,
+                   session_id=None if force_new else active)
     if task_id is None:
         tg_send(chat_id, f"🚫 Слишком много задач в очереди. Подождите завершения текущих.")
         return
-
-    active   = sm.get_active_id(chat_id)
     sid_hint = "\n🆕 Новая сессия" if force_new else (f"\nСессия: `{active[:12]}`" if active else "")
     tg_send(chat_id, f"📥 Принято `{task_id}`{sid_hint}", reply_to=message_id)
     log.info("Task %s queued from chat %d: %s", task_id, chat_id, text[:80])

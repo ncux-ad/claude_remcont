@@ -18,10 +18,12 @@ _SCHEMA = """
         message_id  INTEGER NOT NULL,
         force_new   INTEGER NOT NULL DEFAULT 0,
         status      TEXT NOT NULL DEFAULT 'pending',
+        session_id  TEXT,
         created_at  TEXT NOT NULL,
         updated_at  TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_session ON tasks(session_id);
 """
 
 
@@ -38,6 +40,13 @@ def _get_conn() -> sqlite3.Connection:
         conn = sqlite3.connect(QUEUE_FILE, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
+    # Migration: add session_id column to existing databases that predate this field
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON tasks(session_id)")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return conn
 
 
@@ -47,7 +56,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> str | None:
+def push(
+    text: str, chat_id: int, message_id: int,
+    force_new: bool = False, session_id: str | None = None,
+) -> str | None:
     """Add task to queue. Returns task_id, or None if queue is full (rate limit)."""
     with _lock:
         conn = _get_conn()
@@ -71,9 +83,10 @@ def push(text: str, chat_id: int, message_id: int, force_new: bool = False) -> s
             now = datetime.now(timezone.utc).isoformat()
             with conn:
                 conn.execute(
-                    "INSERT INTO tasks (id, text, chat_id, message_id, force_new, status, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-                    (task_id, text, chat_id, message_id, int(force_new), now),
+                    "INSERT INTO tasks"
+                    " (id, text, chat_id, message_id, force_new, status, session_id, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                    (task_id, text, chat_id, message_id, int(force_new), session_id, now),
                 )
             log.info("Task queued: %s (chat=%d, queue=%d/%d)",
                      task_id, chat_id, pending_running + 1, MAX_QUEUE_SIZE)
@@ -207,6 +220,20 @@ def get_recent_tasks(chat_id: int, limit: int = 10) -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM tasks WHERE chat_id=? ORDER BY created_at DESC LIMIT ?",
             (chat_id, limit),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_tasks_for_session(session_id: str, chat_id: int, limit: int = 20) -> list[dict]:
+    """Return tasks linked to a specific session for a chat, newest first."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE session_id=? AND chat_id=?"
+            " ORDER BY created_at DESC LIMIT ?",
+            (session_id, chat_id, limit),
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
