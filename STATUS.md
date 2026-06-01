@@ -62,63 +62,62 @@
 
 Полный цикл по протоколу `docs/AGENTS.md`. Вердикт: **READY**.
 
-**Документация:**
-- `README.md` — архитектура, быстрый старт, команды, env-таблица
-- `DEPLOY.md` — пошаговый гайд: clone → configure → systemd → rollback план
-- `docs/AGENTS.md` — протокол production readiness review для будущих релизов
+**Документация:** `README.md`, `DEPLOY.md`, `docs/AGENTS.md`
 
-**Тесты — 27 smoke-тестов, 100% pass:**
-- `tests/test_queue.py` — push, rate limit, atomic claim, crash recovery, corrupt JSON (11 тестов)
-- `tests/test_session.py` — register, path injection, dedup, label, build_claude_args (11 тестов)
-- `tests/test_config.py` — пустой токен, placeholder, invalid dir, valid config (5 тестов)
+**Тесты — 27 smoke-тестов, 100% pass**
 
-**Observability:**
-- `claude-tg-bridge.logrotate` — daily, 14 дней, compress
+**Observability:** `claude-tg-bridge.logrotate`
 
-**Code quality:**
-- `tg_notify.py`: `print()` → `logging` с записью в `LOG_FILE`
-- `requirements.txt`: `requests>=2.28.0,<3.0.0`
-- `requirements-dev.txt`: `pytest>=8.0`
-- `.gitignore`: fix `.env*` → `.env` + `!.env.example`
+---
+
+### v0.6 — HIGH-баги + MEDIUM-фичи + SQLite (коммиты `fecaf18`, `8f718e9`)
+
+**HIGH — исправлено:**
+- Изоляция сессий по `chat_id`: `session_manager.py` полностью переработан, все функции принимают `chat_id`
+- Healthcheck: heartbeat-файл (`logs/heartbeat`) + `check_health.py` + cron
+
+**MEDIUM — реализовано:**
+- Retry Telegram API: exponential backoff в `tg_send()` (3 попытки, 1s/2s)
+- Cleanup: `cleanup_old_tasks(days)` + `cleanup_old_sessions(days)`, запуск при старте и раз в час
+- `/stats` команда: очередь, сессии, аптайм
+- SQLite вместо JSON: `queue_manager.py` на `sqlite3` + WAL, corrupt-DB recovery, `get_running_task()` перенесён из `tg_notify.py`
+
+**Тесты расширены: 48 тестов, 100% pass**
+- `tests/test_retry.py` — 5 тестов retry + backoff
+- `tests/test_cleanup.py` — 8 тестов + 2 stats
+- `tests/test_health.py` — 5 тестов healthcheck
+- `tests/test_session.py` — +3 теста изоляции чатов
+- `tests/test_queue.py` — переписан под SQLite
+
+**Code review (high-effort): 5 багов исправлено:**
+- `TimeoutExpired` не имеет `.process` → `AttributeError` → поток умирал молча
+- `task_id` коллизия после cleanup (COUNT-суффикс) → microseconds
+- TOCTOU в `/status` (двойной `next_pending()`) → walrus operator
+- `get_running_task()` возвращал задачу чужого чата → удалён fallback
+- Corrupt DB: `log.error` → `log.critical` с "all tasks lost"
+
+---
+
+### v0.7 — LOW-фичи + dev-tooling (текущий)
+
+- `/history` команда: последние 10 задач чата из SQLite
+- `/sessions` пагинация: `/sessions 2`, `/sessions 3` и т.д.
+- `pyproject.toml`: `python_requires>=3.10`, ruff + mypy конфиг
+- `.pre-commit-config.yaml`: ruff (lint + format) + mypy
+- `requirements-dev.txt`: добавлены `pre-commit`, `ruff`, `mypy`, `types-requests`
 
 ---
 
 ## Что предстоит
 
-### 🔴 HIGH — критично для надёжности
-
-| Задача | Проблема | Решение |
-|--------|----------|---------|
-| Убрать `--dangerously-skip-permissions` | Claude выполняет любой код без проверок | Настроить `autoApprove` в `.claude/settings.json` |
-| Healthcheck | Нельзя автоматически проверить живость | Файл-heartbeat (`/tmp/claude-tg-health`) обновляется каждые N секунд; cron проверяет свежесть |
-| Session_manager не изолирован по чату | Два разных чата переключают сессии друг у друга | Ключ сессии `f"{chat_id}_{session_id}"` вместо просто `session_id` |
-
----
-
-### 🟡 MEDIUM — улучшение стабильности
-
-| Задача | Проблема | Решение |
-|--------|----------|---------|
-| Перейти с JSON на SQLite | Деградация при росте очереди; нет транзакций | `queue_manager.py` на `sqlite3` + WAL mode |
-| Cleanup старых задач | `.queue.json` растёт бесконечно | Автоудаление `done/error` старше N дней |
-| Cleanup старых сессий | `sessions.json` растёт бесконечно | TTL + команда `/cleanup` |
-| Retry для Telegram API | Потеря уведомления при сбое сети | Exponential backoff в `tg_send()` и `tg_get_updates()` |
-| Мониторинг | Нет метрик размера очереди, ошибок | Prometheus exporter или минимальный `/health` endpoint |
-| Staging-окружение | Правки проверяются сразу на prod | Отдельный бот-токен для тестирования |
-
----
-
 ### 🟢 LOW — nice-to-have
 
 | Задача | Описание |
 |--------|----------|
-| `/history [SESSION_ID]` | Список задач в сессии |
-| `/health` команда | Статус бота: очередь, память, аптайм |
-| Пагинация в `/sessions` | При 20+ сессиях список нечитаем |
-| Pre-commit hooks | `ruff`, `mypy`, `black` автоматически при коммите |
-| `pyproject.toml` | Единый конфиг: `python_requires>=3.10`, ruff, mypy |
-| Per-user rate limiting | Один пользователь не может спамить очередь |
-| Circuit breaker для Claude | Не вызывать Claude если он стабильно падает |
+| Per-user rate limiting | Один пользователь не может спамить очередь (сейчас лимит общий на все чаты) |
+| Circuit breaker для Claude | Не вызывать Claude если он стабильно падает N раз подряд |
+| SQLite для sessions | Перевести `session_manager.py` с JSON на SQLite |
+| Staging-окружение | Отдельный бот-токен для тестирования правок |
 
 ---
 
@@ -126,7 +125,7 @@
 
 ```
 [x] Scope понятен
-[x] Tests проходят (27/27)
+[x] Tests проходят (48/48)
 [x] Секреты не в репозитории
 [x] .env.example есть
 [x] README.md + DEPLOY.md есть
@@ -137,8 +136,9 @@
 [x] Log rotation настроен
 [x] Graceful shutdown + crash recovery
 [x] Rollback-план описан
-[ ] Healthcheck
+[x] Healthcheck (heartbeat + check_health.py)
+[x] SQLite вместо JSON (queue_manager)
+[x] Session isolation by chat_id
 [ ] Staging-окружение
-[ ] SQLite вместо JSON
-[ ] autoApprove вместо --dangerously-skip-permissions
+[ ] autoApprove вместо --dangerously-skip-permissions (преднамеренное решение)
 ```

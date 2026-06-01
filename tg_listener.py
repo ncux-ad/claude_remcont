@@ -19,6 +19,7 @@ from config import (
 from queue_manager import (
     push, set_status, claim_next_pending,
     is_running, next_pending, reset_running_to_pending, cleanup_old_tasks, get_stats,
+    get_recent_tasks,
 )
 import session_manager as sm
 
@@ -182,6 +183,7 @@ def handle_message(msg: dict):
             "• `/new` — начать новую сессию\n"
             "• `/label ID Имя` — дать сессии имя\n"
             "• `/status` — статус текущей задачи\n"
+            "• `/history` — последние 10 задач\n"
             "• `/stats` — статистика бота\n"
             "• `/new текст` — задача в новой сессии"
         )
@@ -209,16 +211,44 @@ def handle_message(msg: dict):
         )
         return
 
-    if text == "/sessions":
+    if text == "/history":
+        tasks = get_recent_tasks(chat_id, limit=10)
+        if not tasks:
+            tg_send(chat_id, "📭 Нет задач в истории.")
+            return
+        status_icon = {"pending": "⏳", "running": "⚙️", "done": "✅", "error": "❌"}
+        lines = ["📜 *История задач (последние 10)*\n"]
+        for t in tasks:
+            icon = status_icon.get(t["status"], "❓")
+            ts = t["created_at"][:16].replace("T", " ")
+            preview = t["text"][:60].replace("`", "'")
+            lines.append(f"{icon} `{ts}` — {preview}")
+        tg_send(chat_id, "\n".join(lines))
+        return
+
+    if text == "/sessions" or text.startswith("/sessions "):
         sessions = sm.get_all(chat_id)
         active   = sm.get_active_id(chat_id)
         if not sessions:
             tg_send(chat_id, "📭 Нет сохранённых сессий.")
             return
-        lines = ["📋 *Сессии*\n"]
-        for s in sessions[:10]:
+        page = 1
+        if text.startswith("/sessions "):
+            try:
+                page = max(1, int(text.split()[1]))
+            except (ValueError, IndexError):
+                pass
+        page_size = 10
+        total = len(sessions)
+        start = (page - 1) * page_size
+        chunk = sessions[start:start + page_size]
+        header = f"📋 *Сессии* (стр. {page}/{(total - 1) // page_size + 1}, всего {total})\n"
+        lines = [header]
+        for s in chunk:
             marker = "▶️" if s["id"] == active else "  "
             lines.append(f"{marker} `{s['id'][:12]}` — {s.get('label', s['id'][:8])} ({s.get('task_count', 0)} задач)")
+        if total > start + page_size:
+            lines.append(f"\n_Следующая страница:_ `/sessions {page + 1}`")
         tg_send(chat_id, "\n".join(lines))
         return
 

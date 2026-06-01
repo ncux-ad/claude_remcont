@@ -192,6 +192,19 @@ def next_pending() -> dict | None:
         conn.close()
 
 
+def get_recent_tasks(chat_id: int, limit: int = 10) -> list[dict]:
+    """Return the most recent tasks for a chat, newest first."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE chat_id=? ORDER BY created_at DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_running_task() -> dict | None:
     """Return the current running task, or None if nothing is running."""
     conn = _get_conn()
