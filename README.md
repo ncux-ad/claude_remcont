@@ -5,15 +5,17 @@ Run Claude Code tasks from your phone via a Telegram bot. Designed for Linux ser
 ## Architecture
 
 ```
-Telegram → tg_listener.py → task queue → claude -p
+Telegram → tg_listener.py → SQLite queue → claude -p
                                                ↓
                               Stop Hook → tg_notify.py → Telegram
 ```
 
 - `tg_listener.py` — long-polling bot, queues tasks, runs `claude -p`
 - `tg_notify.py` — Claude Code Stop Hook, sends result back to Telegram
-- `session_manager.py` — persists session IDs, supports `--resume`
-- `queue_manager.py` — atomic JSON queue with rate limiting
+- `session_manager.py` — per-chat session isolation, SQLite storage, `--resume`
+- `queue_manager.py` — SQLite queue with global + per-chat rate limiting
+- `circuit_breaker.py` — blocks chat after N consecutive Claude failures
+- `check_health.py` — cron healthcheck via heartbeat file
 
 ## Requirements
 
@@ -46,11 +48,14 @@ python3 tg_listener.py
 |---|---|
 | `<any text>` | Queue a task for Claude Code |
 | `/new <text>` | Queue a task in a fresh session |
-| `/sessions` | List all sessions |
+| `/sessions` | List sessions (10 per page) |
+| `/sessions 2` | Page 2 of sessions |
 | `/session ID` | Switch to a specific session |
 | `/new` | Next task will start a new session |
 | `/label ID Name` | Rename a session |
-| `/status` | Show current queue status |
+| `/status` | Current queue status |
+| `/history` | Last 10 tasks for this chat |
+| `/stats` | Queue counts, sessions, uptime |
 | `/start` | Show help |
 
 ## Claude Code Stop Hook
@@ -86,6 +91,13 @@ sudo journalctl -fu claude-tg-bridge@$USER
 sudo cp claude-tg-bridge.logrotate /etc/logrotate.d/claude-tg-bridge
 ```
 
+## Healthcheck (cron)
+
+```bash
+# Check every 2 minutes; alert via Telegram if bot stops updating heartbeat
+*/2 * * * * source ~/.env.claude-tg && python3 /path/to/check_health.py
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -95,4 +107,14 @@ sudo cp claude-tg-bridge.logrotate /etc/logrotate.d/claude-tg-bridge
 | `CLAUDE_PROJECT_DIR` | `~/claude_remcont` | Working directory for Claude |
 | `CLAUDE_BIN` | `claude` | Claude CLI binary |
 | `CLAUDE_TASK_TIMEOUT` | `0` | Task timeout in seconds (0 = none) |
-| `CLAUDE_MAX_QUEUE_SIZE` | `50` | Max queued tasks before rejection |
+| `CLAUDE_MAX_QUEUE_SIZE` | `50` | Global max queued tasks |
+| `CLAUDE_PER_CHAT_QUEUE_LIMIT` | `5` | Max queued tasks per chat |
+| `CLAUDE_CB_THRESHOLD` | `3` | Failures before circuit breaker opens |
+| `CLAUDE_CB_COOLDOWN` | `300` | Seconds circuit breaker stays open |
+| `CLAUDE_HEARTBEAT_MAX_AGE` | `120` | Seconds before healthcheck alerts |
+| `CLAUDE_QUEUE_CLEANUP_DAYS` | `7` | Days before done/error tasks are deleted |
+| `SESSION_CLEANUP_DAYS` | `30` | Days before unused sessions are deleted |
+
+## Staging
+
+See [docs/STAGING.md](docs/STAGING.md) for running a second bot instance for testing.
