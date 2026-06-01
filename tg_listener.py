@@ -220,11 +220,15 @@ def handle_message(msg: dict):
         status_icon = {"pending": "⏳", "running": "⚙️", "done": "✅", "error": "❌"}
         if text.startswith("/history "):
             sid = text[9:].strip()
-            if not sm.exists(sid, chat_id):
+            full_id, ambiguous = sm.resolve(sid, chat_id)
+            if ambiguous:
+                tg_send(chat_id, f"❓ Префикс `{sid[:12]}` подходит нескольким сессиям — уточните.")
+                return
+            if not full_id:
                 tg_send(chat_id, f"❓ Сессия `{sid[:12]}` не найдена.")
                 return
-            tasks = get_tasks_for_session(sid, chat_id, limit=20)
-            header = f"📜 *История сессии* `{sid[:12]}`\n"
+            tasks = get_tasks_for_session(full_id, chat_id, limit=20)
+            header = f"📜 *История сессии* `{full_id[:12]}`\n"
         else:
             tasks = get_recent_tasks(chat_id, limit=10)
             header = "📜 *История задач (последние 10)*\n"
@@ -268,11 +272,15 @@ def handle_message(msg: dict):
 
     if text.startswith("/session "):
         sid = text[9:].strip()
-        if not sm.exists(sid, chat_id):
+        full_id, ambiguous = sm.resolve(sid, chat_id)
+        if ambiguous:
+            tg_send(chat_id, f"❓ Префикс `{sid[:12]}` подходит нескольким сессиям — уточните.")
+            return
+        if not full_id:
             tg_send(chat_id, f"❓ Сессия `{sid}` не найдена.")
             return
-        sm.set_active(sid, chat_id)
-        tg_send(chat_id, f"✅ Переключились на `{sid[:12]}`")
+        sm.set_active(full_id, chat_id)
+        tg_send(chat_id, f"✅ Переключились на `{full_id[:12]}`")
         return
 
     if text == "/new":
@@ -286,11 +294,15 @@ def handle_message(msg: dict):
             tg_send(chat_id, "Синтаксис: `/label SESSION_ID Имя`")
             return
         sid, label = parts
-        if not sm.exists(sid, chat_id):
+        full_id, ambiguous = sm.resolve(sid, chat_id)
+        if ambiguous:
+            tg_send(chat_id, f"❓ Префикс `{sid[:12]}` подходит нескольким сессиям — уточните.")
+            return
+        if not full_id:
             tg_send(chat_id, f"❓ Сессия `{sid}` не найдена.")
             return
-        sm.set_label(sid, label, chat_id)
-        tg_send(chat_id, f"✅ Сессия `{sid[:12]}` переименована: *{label}*")
+        sm.set_label(full_id, label, chat_id)
+        tg_send(chat_id, f"✅ Сессия `{full_id[:12]}` переименована: *{label}*")
         return
 
     if text == "/status":

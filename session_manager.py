@@ -84,6 +84,41 @@ def exists(session_id: str, chat_id: int) -> bool:
         conn.close()
 
 
+def _escape_like(s: str) -> str:
+    """Escape LIKE wildcards so a prefix is matched literally (ids may contain '_')."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def resolve(prefix: str, chat_id: int) -> tuple[str | None, bool]:
+    """Resolve a (possibly truncated) session id prefix to a full id for a chat.
+
+    Returns (full_id, ambiguous):
+      - (full_id, False)  exactly one match (or an exact full-id match)
+      - (None, True)      prefix matches more than one session
+      - (None, False)     no match
+    """
+    if not prefix:
+        return None, False
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM sessions WHERE chat_id=? AND id LIKE ? ESCAPE '\\'"
+            " ORDER BY last_used DESC",
+            (chat_id, _escape_like(prefix) + "%"),
+        ).fetchall()
+        if not rows:
+            return None, False
+        # An exact match is unambiguous even if it's also a prefix of other ids.
+        for r in rows:
+            if r["id"] == prefix:
+                return prefix, False
+        if len(rows) > 1:
+            return None, True
+        return rows[0]["id"], False
+    finally:
+        conn.close()
+
+
 def set_active(session_id: str | None, chat_id: int):
     with _lock:
         conn = _get_conn()

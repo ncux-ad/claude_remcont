@@ -102,3 +102,42 @@ def test_set_active_does_not_affect_other_chat(isolated_sessions):
     sm.set_active(None, CHAT)
     assert sm.get_active_id(CHAT) is None
     assert sm.get_active_id(OTHER_CHAT) == "cccc3333dddd4444"
+
+
+def test_resolve_by_truncated_prefix(isolated_sessions):
+    sm.register("abcdef1234567890", CHAT)
+    # The 12-char prefix is exactly what the bot displays to the user.
+    assert sm.resolve("abcdef123456", CHAT) == ("abcdef1234567890", False)
+
+
+def test_resolve_exact_full_id(isolated_sessions):
+    sm.register("abcdef1234567890", CHAT)
+    assert sm.resolve("abcdef1234567890", CHAT) == ("abcdef1234567890", False)
+
+
+def test_resolve_unknown_prefix(isolated_sessions):
+    sm.register("abcdef1234567890", CHAT)
+    assert sm.resolve("zzzz", CHAT) == (None, False)
+
+
+def test_resolve_ambiguous_prefix(isolated_sessions):
+    sm.register("abcdef1111111111", CHAT)
+    sm.register("abcdef2222222222", CHAT)
+    assert sm.resolve("abcdef", CHAT) == (None, True)
+
+
+def test_resolve_is_chat_scoped(isolated_sessions):
+    sm.register("abcdef1234567890", OTHER_CHAT)
+    assert sm.resolve("abcdef123456", CHAT) == (None, False)
+
+
+def test_resolve_empty_prefix(isolated_sessions):
+    sm.register("abcdef1234567890", CHAT)
+    assert sm.resolve("", CHAT) == (None, False)
+
+
+def test_resolve_treats_underscore_literally(isolated_sessions):
+    # '_' is a LIKE wildcard; ensure it isn't matched as "any char".
+    sm.register("abc_def1234567890", CHAT)
+    sm.register("abcXdef1234567890", CHAT)
+    assert sm.resolve("abc_def", CHAT) == ("abc_def1234567890", False)
