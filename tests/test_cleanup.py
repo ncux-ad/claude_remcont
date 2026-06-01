@@ -95,3 +95,21 @@ def test_cleanup_returns_zero_when_nothing_to_remove():
     sm.register("aaaa1111bbbb2222", CHAT)
     removed = sm.cleanup_old_sessions(max_age_days=30)
     assert removed == 0
+
+
+# --- get_stats ---
+
+def test_get_stats_empty_queue():
+    stats = qm.get_stats()
+    assert stats == {"pending": 0, "running": 0, "done": 0, "error": 0}
+
+
+def test_get_stats_counts_by_status():
+    qm.push("t1", CHAT, 1)
+    qm.push("t2", CHAT, 2)
+    t = qm._load()[0]
+    qm.set_status(t["id"], "done")
+    stats = qm.get_stats()
+    assert stats["pending"] == 1
+    assert stats["done"] == 1
+    assert stats["running"] == 0

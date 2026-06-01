@@ -94,6 +94,15 @@ def reset_running_to_pending():
             log.warning("Reset %d stuck 'running' task(s) to 'pending' on startup", len(reset))
 
 
+def get_stats() -> dict:
+    """Return task counts grouped by status."""
+    counts: dict[str, int] = {"pending": 0, "running": 0, "done": 0, "error": 0}
+    for t in _load():
+        status = t.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 def cleanup_old_tasks(max_age_days: int) -> int:
     """Remove done/error tasks older than max_age_days. Returns count removed."""
     with _lock:

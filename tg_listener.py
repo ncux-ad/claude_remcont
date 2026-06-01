@@ -18,7 +18,7 @@ from config import (
 )
 from queue_manager import (
     push, set_status, claim_next_pending,
-    is_running, next_pending, reset_running_to_pending, cleanup_old_tasks,
+    is_running, next_pending, reset_running_to_pending, cleanup_old_tasks, get_stats,
 )
 import session_manager as sm
 
@@ -31,6 +31,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 _shutdown = threading.Event()
+_start_time = time.time()
 
 
 def _write_heartbeat():
@@ -181,8 +182,31 @@ def handle_message(msg: dict):
             "• `/session ID` — переключиться на сессию\n"
             "• `/new` — начать новую сессию\n"
             "• `/label ID Имя` — дать сессии имя\n"
-            "• `/status` — статус задачи\n"
+            "• `/status` — статус текущей задачи\n"
+            "• `/stats` — статистика бота\n"
             "• `/new текст` — задача в новой сессии"
+        )
+        return
+
+    if text == "/stats":
+        counts  = get_stats()
+        sessions = sm.get_all(chat_id)
+        active   = sm.get_active_id(chat_id)
+        elapsed  = int(time.time() - _start_time)
+        days, rem = divmod(elapsed, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins = rem // 60
+        uptime = (f"{days}д " if days else "") + (f"{hours}ч " if hours or days else "") + f"{mins}м"
+        sid_line = f"`{active[:12]}`" if active else "_нет_"
+        tg_send(chat_id,
+            f"📊 *Статистика*\n\n"
+            f"🗂 *Очередь:*\n"
+            f"  ожидает: {counts['pending']}\n"
+            f"  выполняется: {counts['running']}\n"
+            f"  выполнено: {counts['done']}\n"
+            f"  ошибок: {counts['error']}\n\n"
+            f"💬 *Сессии (этот чат):* {len(sessions)}, активная: {sid_line}\n\n"
+            f"⏱ *Аптайм:* {uptime}"
         )
         return
 
