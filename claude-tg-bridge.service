@@ -1,0 +1,28 @@
+[Unit]
+Description=Claude Code Telegram Bridge
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/claude_remcont
+EnvironmentFile=/home/%i/.env.claude-tg
+ExecStart=/usr/bin/python3 /home/%i/claude_remcont/tg_listener.py
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Graceful shutdown: tg_listener catches SIGTERM and exits cleanly
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=append:/home/%i/claude_remcont/logs/listener.log
+StandardError=append:/home/%i/claude_remcont/logs/listener.log
+
+# Resource limits
+LimitNOFILE=8192
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
