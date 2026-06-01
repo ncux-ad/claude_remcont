@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
+import logging
 import sys
 import json
 import os
 import requests
-from config import BOT_TOKEN, ALLOWED_CHAT_IDS, QUEUE_FILE
+from config import BOT_TOKEN, ALLOWED_CHAT_IDS, QUEUE_FILE, LOG_FILE
 from queue_manager import set_status
 import session_manager as sm
+
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] tg_notify %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stderr)],
+)
+log = logging.getLogger(__name__)
 
 
 def send(chat_id: int, text: str):
@@ -16,7 +25,7 @@ def send(chat_id: int, text: str):
             timeout=10,
         )
     except Exception as e:
-        print(f"tg_notify: sendMessage failed: {type(e).__name__}", file=sys.stderr)
+        log.warning("sendMessage failed: %s", type(e).__name__)
 
 
 def get_running_task() -> dict | None:
@@ -26,7 +35,7 @@ def get_running_task() -> dict | None:
         with open(QUEUE_FILE) as f:
             q = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        print(f"tg_notify: failed to read queue: {e}", file=sys.stderr)
+        log.error("Failed to read queue: %s", e)
         return None
     for t in reversed(q):
         if t["status"] == "running":
@@ -41,9 +50,9 @@ def main():
         if raw.strip():
             stdin_data = json.loads(raw)
     except json.JSONDecodeError as e:
-        print(f"tg_notify: invalid JSON from stdin: {e}", file=sys.stderr)
+        log.warning("Invalid JSON from stdin: %s", e)
     except OSError as e:
-        print(f"tg_notify: cannot read stdin: {e}", file=sys.stderr)
+        log.warning("Cannot read stdin: %s", e)
 
     if stdin_data.get("stop_hook_active"):
         sys.exit(0)
@@ -70,7 +79,6 @@ def main():
     sid_line = f"\n🔖 Сессия: `{active[:12]}`" if active else ""
     send(chat_id, f"✅ *Готово*{sid_line}\n\n{preview}")
 
-    # Use queue_manager's atomic set_status instead of manual JSON manipulation
     task_id = task.get("id")
     if task_id:
         set_status(task_id, "done")

@@ -1,0 +1,8 @@
+/home/*/claude_remcont/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    missingok
+}

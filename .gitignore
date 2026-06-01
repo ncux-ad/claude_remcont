@@ -3,4 +3,6 @@ logs/
 .queue.json
 __pycache__/
 *.pyc
-.env*
+.env
+.env.*
+!.env.example
